@@ -1,0 +1,94 @@
+name: Build CARLA PythonAPI for ARM64
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: [self-hosted, linux, arm64]
+
+    steps:
+      - name: Checkout CARLA Simulator
+        uses: actions/checkout@v4
+        with:
+          repository: carla-simulator/carla
+          ref: 0.9.16
+          fetch-depth: 1
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget software-properties-common build-essential clang-10 lld-10 g++-7 cmake ninja-build libvulkan1 python3-dev libpng-dev libtiff5-dev libjpeg-dev tzdata sed curl unzip autoconf libtool rsync libxml2-dev git libc++-10-dev libc++abi-10-dev python3-testresources locales
+
+      - name: Configure System Locale
+        run: |
+          sudo locale-gen en_US.UTF-8
+          sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8
+
+      - name: Install Python Packaging Tools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel distro auditwheel build
+
+      - name: Inject Compiler Wrappers
+        run: |
+          sudo mkdir -p /Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/
+          
+          sudo tee /Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang > /dev/null << 'EOF'
+          #!/bin/bash
+          declare -a NEW_ARGS
+          for arg in "$@"; do
+              if [[ "$arg" == --sysroot=* ]] || [[ "$arg" == -I/Engine* ]] || [[ "$arg" == -Wl,-L/Engine* ]]; then
+                  continue
+              fi
+              NEW_ARGS+=("$arg")
+          done
+          exec /usr/bin/clang-10 "${NEW_ARGS[@]}"
+          EOF
+
+          sudo tee /Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ > /dev/null << 'EOF'
+          #!/bin/bash
+          declare -a NEW_ARGS
+          for arg in "$@"; do
+              if [[ "$arg" == --sysroot=* ]] || [[ "$arg" == -I/Engine* ]] || [[ "$arg" == -Wl,-L/Engine* ]]; then
+                  continue
+              fi
+              NEW_ARGS+=("$arg")
+          done
+          exec /usr/bin/clang++-10 "${NEW_ARGS[@]}"
+          EOF
+
+          sudo chmod +x /Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang*
+
+      - name: Patch libpng Download Link
+        run: |
+          sed -i 's|https://sourceforge.net/projects/libpng/files/libpng16/[^"]*|https://downloads.sourceforge.net/libpng/libpng-1.6.37.tar.xz|g' Util/BuildTools/Setup.sh
+
+      - name: Compile PythonAPI
+        env:
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
+          LC_CTYPE: en_US.UTF-8
+        run: |
+          make PythonAPI ARGS="--python-version 3.8"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: carla-python-api-arm64
+          path: PythonAPI/carla/dist/*.whl
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: PythonAPI/carla/dist/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
